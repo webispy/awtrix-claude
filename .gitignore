@@ -1,0 +1,8 @@
+# Flash backups. Keep them, but 4 MB blobs do not belong in git.
+*.bin
+
+# The photograph the pixel pitch was measured from lives in docs/ as a smaller copy.
+IMG_*.JPG
+
+.DS_Store
+__pycache__/

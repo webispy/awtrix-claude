@@ -1,0 +1,10 @@
+{
+  "name": "awtrix-panel",
+  "description": "Claude Code session state on an AWTRIX NG LED matrix panel, through the pixelwire display server",
+  "version": "0.2.0",
+  "author": {
+    "name": "webispy",
+    "email": "webispy@gmail.com"
+  },
+  "homepage": "https://github.com/webispy/awtrix-claude"
+}

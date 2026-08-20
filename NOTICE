@@ -1,0 +1,16 @@
+awtrix-claude
+
+Code: MIT License — see LICENSE.
+
+The creature drawn on the panel (plugins/awtrix-panel/claudlet.py) is adapted from
+claudlet — https://github.com/YeeDochi/Claudlet — whose original creature artwork its
+authors dedicated to the public domain under CC0 1.0:
+
+    https://creativecommons.org/publicdomain/zero/1.0/
+
+CC0 asks for nothing, including attribution. This notice is here because the work was
+worth crediting anyway: the palette, the silhouette and the walk cycle are theirs, and
+this only squeezed 19x11 art pixels into the six rows a 32x8 panel can spare.
+
+The firmware this drives is a fork of AWTRIX NG — https://github.com/Blueforcer/awtrix-ng —
+under the PolyForm Noncommercial 1.0.0 licence.
