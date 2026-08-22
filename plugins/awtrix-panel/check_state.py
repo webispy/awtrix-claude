@@ -43,6 +43,15 @@ with tempfile.TemporaryDirectory() as home:
     subagent = run(home, "SubagentStop", "codex", payload)
     assert subagent.returncode == 0 and json.loads(subagent.stdout) == {}
 
+    tool = run(home, "PreToolUse", "codex", {**payload, "tool_name": "exec_command"})
+    compact = run(home, "PreCompact", "codex", payload)
+    post_compact = run(home, "PostCompact", "codex", payload)
+    with open(path, encoding="utf-8") as f:
+        record = json.load(f)
+    assert tool.returncode == compact.returncode == post_compact.returncode == 0
+    assert record["tool"] == "exec_command" and record["compactions"] == 1
+    assert record["compacting"] is False
+
     ended = run(home, "SessionEnd", "codex", payload)
     assert ended.returncode == 0 and not os.path.exists(path)
 

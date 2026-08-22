@@ -27,6 +27,9 @@ import fcntl
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
 import claudlet  # noqa: E402
+import codexmark  # noqa: E402
+import codexusage  # noqa: E402
+import panelconfig  # noqa: E402
 
 HOME = os.environ.get("AWTRIX_PANEL_HOME") or os.path.expanduser("~/.local/state/awtrix-panel")
 SESSIONS = os.path.join(HOME, "sessions")
@@ -261,7 +264,16 @@ def collect(now: float) -> dict:
                 rec = json.load(f)
         except Exception:
             continue
-        if now - float(rec.get("updated") or 0) > TTL:
+        telemetry = {}
+        if rec.get("agent") == "codex":
+            telemetry = codexusage.read(rec.get("session_id"), rec.get("transcript"))
+            rec["codex"] = telemetry
+        # A long Codex turn may have no lifecycle hook for more than the TTL while its rollout is
+        # still receiving model and tool events. Treat that append-only file as liveness without
+        # ever copying its conversation records into our state.
+        rec["active_updated"] = max(float(rec.get("updated") or 0),
+                                    float(telemetry.get("updated") or 0))
+        if now - rec["active_updated"] > TTL:
             log(f"expire {name}")
             try:
                 os.unlink(path)
@@ -281,7 +293,7 @@ def collect(now: float) -> dict:
     # The panel follows one session - the one worked in most recently - because a figure taken
     # across all of them belongs to none of them. Aggregating context with max() showed 89% from a
     # long-running window while the statusline being read said 4%, and both were right.
-    primary = max(sessions, key=lambda r: float(r.get("updated") or 0))
+    primary = max(sessions, key=lambda r: float(r.get("active_updated") or 0))
     # Dots are ordered by session id, not by recency: an active dot that jumped position whenever
     # another window was touched would be unreadable.
     ordered = sorted(sessions, key=lambda r: str(r.get("session_id") or ""))
@@ -296,13 +308,21 @@ def collect(now: float) -> dict:
     if status not in STATE_LOOK:
         status = "idle"
 
+    agent = primary.get("agent", "claude")
+    codex = primary.get("codex") or {}
     tokens = None
-    # Claude's JSONL layout is understood here. Codex deliberately does not promise a stable
-    # transcript schema, so its path is retained as metadata but never parsed.
-    if primary.get("agent", "claude") == "claude" and primary.get("transcript"):
+    window = 0
+    if agent == "claude" and primary.get("transcript"):
         tokens = context_from_transcript(primary["transcript"])
-    window = window_for(tokens)
+        window = window_for(tokens)
+    elif agent == "codex":
+        tokens = codex.get("context_tokens")
+        window = int(codex.get("context_window") or 0)
+    if not window:
+        window = window_for(tokens)
     context = primary.get("context_pct")        # the statusline filter, when installed
+    if context is None and agent == "codex":
+        context = codex.get("context_pct")
     if context is None and tokens is not None:
         context = round(tokens * 100 / window)
     if context is not None:
@@ -310,6 +330,11 @@ def collect(now: float) -> dict:
 
     # Quota is per account rather than per session, so it comes from whoever reported it last.
     quota = primary.get("quota_5h")
+    quota_secondary = primary.get("quota_7d")
+    rate_limits = codex.get("rate_limits") or {}
+    if agent == "codex":
+        quota = ((rate_limits.get("primary") or {}).get("used_percent"))
+        quota_secondary = ((rate_limits.get("secondary") or {}).get("used_percent"))
     if quota is None:
         for rec in sorted(sessions, key=lambda r: -float(r.get("updated") or 0)):
             if rec.get("quota_5h") is not None:
@@ -324,13 +349,48 @@ def collect(now: float) -> dict:
     # One status per dot, in dot order, so each session's own state can be drawn rather than the
     # single figure the rest of the panel uses.
     states = [(r.get("status") if r.get("status") in STATE_LOOK else "idle") for r in ordered]
+    total = codex.get("usage_total") or {}
+    last_usage = codex.get("usage_last") or {}
+    primary_limit = rate_limits.get("primary") or {}
+    secondary_limit = rate_limits.get("secondary") or {}
+    credits = rate_limits.get("credits") or {}
+    metrics = {
+        "context": context,
+        "context_remaining": None if context is None else 100 - context,
+        "quota_primary": None if quota is None else int(quota),
+        "quota_secondary": None if quota_secondary is None else int(quota_secondary),
+        "quota_primary_reset": primary_limit.get("resets_at"),
+        "quota_secondary_reset": secondary_limit.get("resets_at"),
+        "sessions": len(sessions),
+        "subagents": sum(int(r.get("agents") or 0) for r in sessions),
+        "tokens_context": tokens,
+        "tokens_last": last_usage.get("total_tokens"),
+        "tokens_input": total.get("input_tokens"),
+        "tokens_cached": total.get("cached_input_tokens"),
+        "tokens_output": total.get("output_tokens"),
+        "tokens_reasoning": total.get("reasoning_output_tokens"),
+        "tokens_total": total.get("total_tokens") if total else tokens,
+        "credits": credits.get("balance"),
+        "model": codex.get("model"),
+        "reasoning": codex.get("effort"),
+        "provider": codex.get("model_provider"),
+        "origin": codex.get("originator"),
+        "plan": rate_limits.get("plan_type"),
+        "codex_version": codex.get("cli_version"),
+        "tool": primary.get("tool") or codex.get("tool_active") or codex.get("last_tool"),
+        "compactions": primary.get("compactions"),
+        "cost": cost,
+    }
+    display = panelconfig.for_agent(panelconfig.load(), agent)
     return {"live": len(sessions), "active": active, "status": status, "states": states,
-            "agent": primary.get("agent", "claude"),
+            "agent": agent,
             "tokens": tokens,
             "context": context, "elapsed": None if elapsed is None else int(elapsed),
             "quota": None if quota is None else int(quota),
+            "quota_secondary": None if quota_secondary is None else int(quota_secondary),
             "cost": None if cost is None else float(cost),
-            "agents": sum(int(r.get("agents") or 0) for r in sessions)}
+            "agents": metrics["subagents"], "metrics": metrics,
+            "codex": codex, "display": display}
 
 
 # ---- layers --------------------------------------------------------------------------
@@ -414,11 +474,29 @@ def gauge(y: int, pct: int, table, w: int = GAUGE_W, steps: int = 7, lo: float =
         t = lo + (1.0 - lo) * (round(x / max(1, n - 1) * steps) / steps)
         ops.append(["px", x, y, "".join(f"{min(255, round(c * t)) >> 4:X}" for c in base)])
     if n < w:
-        ops.append(["rect", n, y, w - n, 1, "111"])
+        # The browser lifts dim framebuffer values for an LED-like preview, while the firmware
+        # applies its 1.9 gamma and panel brightness before PWM. 0x11 consequently lands at one
+        # PWM step at the default brightness and looks black through the diffuser; 0x33 remains a
+        # quiet track but survives on the physical TC001.
+        ops.append(["rect", n, y, w - n, 1, "333"])
     return ops
 
 
-def bars_for(view: dict) -> list:
+def _metric(view: dict, name: str | None):
+    if name == "elapsed":
+        return view.get("elapsed")
+    if not name:
+        return None
+    metrics = view.get("metrics") or {}
+    if name in metrics:
+        return metrics[name]
+    # Compatibility for callers and old test fixtures built before the metric dictionary existed.
+    aliases = {"context": "context", "quota_primary": "quota", "subagents": "agents",
+               "tokens_total": "tokens"}
+    return view.get(aliases[name]) if name in aliases else None
+
+
+def bars_for(view: dict, display: dict | None = None) -> list:
     """Both gauges, as empty tracks while there is no figure for them yet.
 
     A row that is simply absent and a row with nothing lit look the same at one pixel tall, so
@@ -426,8 +504,11 @@ def bars_for(view: dict) -> list:
     and the bar that did draw reads as a stray line. That is every session's first minute, before
     any context figure has arrived.
     """
-    return (gauge(6, view.get("quota") or 0, QUOTA_HUES)
-            + gauge(7, view.get("context") or 0, CONTEXT_HUES))
+    names = (display or panelconfig.DEFAULT).get("gauges") or []
+    names = list(names[:2]) + [None] * (2 - len(names))
+    tables = (QUOTA_HUES, CONTEXT_HUES)
+    return sum((gauge(6 + row, _metric(view, name) or 0, tables[row])
+                for row, name in enumerate(names)), [])
 
 
 NUMBER = "FFF"          # the value, bright
@@ -449,32 +530,109 @@ def _dim(color, factor: float = PREFIX_DIM) -> str:
     return "".join(f"{min(255, int(v * factor)) >> 4:X}" for v in rgb)
 
 
-def labels_for(view: dict) -> list:
+def _compact_number(value) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value or "")[:3].upper()
+    if abs(number) < 1000:
+        return str(int(number))[:3]
+    for scale, suffix in ((1_000_000_000, "G"), (1_000_000, "M"), (1_000, "K")):
+        if abs(number) >= scale:
+            whole = number / scale
+            return (f"{whole:.1f}" if whole < 10 else f"{whole:.0f}")[:2] + suffix
+    return str(int(number))[:3]
+
+
+def _until(value, now: float | None = None) -> str:
+    try:
+        seconds = max(0, float(value) - (time.time() if now is None else now))
+    except (TypeError, ValueError):
+        return ""
+    if seconds >= 86400:
+        return f"{round(seconds / 86400)}D"
+    if seconds >= 3600:
+        return f"{round(seconds / 3600)}H"
+    return f"{round(seconds / 60)}M"
+
+
+def _model(value) -> str:
+    text = str(value or "").lower()
+    for needle, label in (("sol", "SOL"), ("terra", "TER"), ("luna", "LUN"),
+                          ("codex", "CDX"), ("opus", "OPS"), ("sonnet", "SON")):
+        if needle in text:
+            return label
+    return text.replace("gpt-", "").replace("claude-", "")[:3].upper()
+
+
+def _version(value) -> str:
+    parts = str(value or "").split(".")
+    return (parts[1] if len(parts) > 1 else parts[0])[:3]
+
+
+def _label(view: dict, name: str) -> tuple | None:
+    value = _metric(view, name)
+    if value is None or value == "" or (name == "subagents" and not value):
+        return None
+    if name in ("context", "context_remaining"):
+        used = int(value) if name == "context" else 100 - int(value)
+        return ("C" if name == "context" else "R", _dim(_hue(used, CONTEXT_HUES)),
+                str(int(value)))
+    if name in ("quota_primary", "quota_secondary"):
+        return ("U" if name == "quota_primary" else "S",
+                _dim(_hue(int(value), QUOTA_HUES)), str(int(value)))
+    if name in ("quota_primary_reset", "quota_secondary_reset"):
+        return ("U" if name == "quota_primary_reset" else "S", _dim("95F"), _until(value))
+    if name == "elapsed":
+        return ("T", _dim("FA2"), fmt_elapsed(value))
+    if name == "model":
+        return ("M", _dim("4DF"), _model(value))
+    if name == "reasoning":
+        return ("E", _dim("B8F"), str(value)[:3].upper())
+    if name == "provider":
+        return ("P", _dim("4DF"), str(value)[:3].upper())
+    if name == "origin":
+        origin = str(value).replace("codex-", "")
+        return ("A", _dim("4DF"), origin[:3].upper())
+    if name == "plan":
+        return ("P", _dim("4DF"), str(value)[:3].upper())
+    if name == "codex_version":
+        return ("V", _dim("4DF"), _version(value))
+    if name == "tool":
+        return ("X", _dim("FA2"), str(value)[:3].upper())
+    number_specs = {
+        "sessions": ("N", "AAA"), "subagents": ("+", "37F"),
+        "tokens_context": ("C", "4BD"), "tokens_last": ("L", "7AD"),
+        "tokens_input": ("I", "5CF"), "tokens_cached": ("K", "59B"),
+        "tokens_output": ("O", "7D8"), "tokens_reasoning": ("R", "D8F"),
+        "tokens_total": ("N", "AAA"), "credits": ("B", "FD5"),
+        "compactions": ("Z", "AAA"), "cost": ("D", "5D8"),
+    }
+    spec = number_specs.get(name)
+    return (spec[0], _dim(spec[1]), _compact_number(value)) if spec else None
+
+
+def labels_for(view: dict, display: dict | None = None) -> list:
     """Every metric worth a glance, as (prefix, colour, value).
 
     The letter takes the colour of the gauge it belongs to and is dimmed; the number stays white.
     That does two jobs at once - it separates the label from the digits, which ran together when
     both were the same grey, and it ties `C` to the bar it describes.
 
-    No percent sign. It cost four pixels to repeat what the letter already said, and at 3x5 it was
-    the glyph most often mistaken for a digit.
+    No percent sign. It spends scarce horizontal space repeating what the letter already says and
+    is still easy to mistake for a digit at this scale.
     """
-    out = []
-    if view.get("context") is not None:
-        out.append(("C", _dim(_hue(view["context"], CONTEXT_HUES)),
-                    str(view["context"])))
-    if view.get("quota") is not None:
-        out.append(("U", _dim(_hue(view["quota"], QUOTA_HUES)),
-                    str(view["quota"])))
-    if view.get("agents"):
-        out.append(("+", _dim("37F"), str(view["agents"])))
+    out = [_label(view, name) for name in (display or panelconfig.DEFAULT).get("labels", [])]
+    out = [entry for entry in out if entry]
     if not out and view.get("tokens") is not None:
         out.append(("", NUMBER, f"{view['tokens'] // 1000}K"))
     return out
 
 
-# A letter is 3 wide; the extra pixel of gap keeps it from reading as part of the number.
-PREFIX_GAP = 5
+# MatrixChunky6 normally advances four pixels, but keeps ambiguous prefixes wider. Add one more
+# blank column because these are separate coloured text operations and must not read as one word.
+PREFIX_ADVANCE = {"M": 7, "N": 6, "O": 6}
+PREFIX_ADVANCE_DEFAULT = 5
 
 
 def _draw(entry: tuple, x: int, y: int) -> list:
@@ -482,23 +640,26 @@ def _draw(entry: tuple, x: int, y: int) -> list:
     ops = []
     if prefix:
         ops.append(["text", x, y, prefix, colour])
-        x += PREFIX_GAP
+        x += PREFIX_ADVANCE.get(prefix, PREFIX_ADVANCE_DEFAULT)
     ops.append(["text", x, y, value, NUMBER])
     return ops
 
 
-def label_frames(view: dict, x: int, y: int = 0) -> list:
+def label_frames(view: dict, x: int, y: int = 0, display: dict | None = None) -> list:
     """Dwell on each metric, then slide it up and out while the next rises into place.
 
     A slide rather than a swap because a value that changes without moving looks like a glitch on
     a panel this small - the movement is what says "this is a different number", not the digits.
     """
-    if view.get("status") == "busy" and view.get("elapsed") is not None:
+    busy = (display or panelconfig.DEFAULT).get("busy_label")
+    if view.get("status") == "busy" and busy:
         # While it is working, how long it has been working is the one figure nothing else carries
         # and the only one that keeps changing on its own. No cycle needed.
-        return [_draw(("T", _dim("FA2"), fmt_elapsed(view["elapsed"])), x, y)]
+        entry = _label(view, busy)
+        if entry:
+            return [_draw(entry, x, y)]
 
-    labels = labels_for(view)
+    labels = labels_for(view, display)
     if not labels:
         return [[]]
     if len(labels) == 1:
@@ -574,8 +735,19 @@ def paint(view: dict) -> None:
         return
     reconcile()
 
+    display = view.get("display") or panelconfig.for_agent(
+        panelconfig.load(), view.get("agent", "claude")
+    )
+    symbol = display.get("symbol", "auto")
+    if symbol == "auto":
+        symbol = view.get("agent", "claude")
     look, walking = STATE_LOOK[view["status"]]
-    if view["status"] == "idle":
+    if symbol == "codex":
+        frames, fps = codexmark.frames(view["status"])
+        _layer("creature", frames, 10, fps)
+    elif symbol == "none":
+        _layer("creature", [[]], 10, 0)
+    elif view["status"] == "idle":
         # Nothing to report is not nothing to look at: it dozes, wanders off and comes back.
         _layer("creature", claudlet.stroll(), 10, WALK_FPS)
     else:
@@ -584,10 +756,10 @@ def paint(view: dict) -> None:
     # The band right of the creature and above the gauges. Sliding text travels a whole glyph
     # height, which without this would carry it across the two rows the gauges own.
     band = [claudlet.WIDTH + 2, 0, 32 - (claudlet.WIDTH + 2), 6]
-    frames = label_frames(view, claudlet.WIDTH + 2, y=0)
+    frames = label_frames(view, claudlet.WIDTH + 2, y=0, display=display)
     _layer("text", frames, 5, LABEL_FPS if len(frames) > 1 else 0, clip=band)
 
-    _layer("bars", [bars_for(view)], 1, 0)
+    _layer("bars", [bars_for(view, display)], 1, 0)
 
     # Its own layer, so the breath runs at its own rate without resending the gauges beside it.
     states, active = view.get("states") or [], view.get("active", 0)
@@ -608,7 +780,7 @@ def _mtime_of_self() -> float:
     for deciding which of two processes is running older code."""
     here = os.path.dirname(os.path.realpath(__file__))
     best = 0.0
-    for name in ("renderer.py", "claudlet.py"):
+    for name in ("renderer.py", "claudlet.py", "codexmark.py", "codexusage.py", "panelconfig.py"):
         try:
             best = max(best, os.path.getmtime(os.path.join(here, name)))
         except OSError:
@@ -714,7 +886,13 @@ def main(argv: list[str]) -> int:
         while not STOP:
             view = collect(time.time())
             if view != last:
-                log(f"paint {view}")
+                metrics = view.get("metrics") or {}
+                report = {key: view.get(key) for key in
+                          ("live", "active", "status", "states", "agent", "elapsed", "agents")}
+                report.update({key: metrics.get(key) for key in
+                               ("context", "quota_primary", "quota_secondary", "tokens_context",
+                                "tokens_total", "model", "plan") if metrics.get(key) is not None})
+                log(f"paint {report}")
                 paint(view)
                 last = view
             if not view.get("live"):

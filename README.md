@@ -1,8 +1,9 @@
 # awtrix-agents
 
 Put Claude Code and Codex sessions on a desk clock: whether an agent is working, waiting for you,
-or running subagents, on the 32×8 LED matrix of a **Ulanzi TC001**. Claude can additionally show
-context and quota through its statusline integration.
+or running subagents, on the 32×8 LED matrix of a **Ulanzi TC001**. Both report context and usage;
+Claude uses its transcript and optional statusline, while Codex reads numeric events from its local
+rollout without retaining conversation content.
 
 Getting there needed a control channel the panel did not have. That part is finished and running:
 a fork of [AWTRIX NG](https://github.com/Blueforcer/awtrix-ng) that takes commands and raw frames

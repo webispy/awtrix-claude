@@ -144,17 +144,24 @@ r.STATUS_DOT["busy"] = _amber
 # drew a single bar that read as a stray line instead of as one of a pair.
 check("both rows are drawn before any figure arrives", {op[2] for op in r.bars_for({})}, {6, 7})
 check("an unknown gauge is a full-width track", r.bars_for({}),
-      [["rect", 0, 6, r.GAUGE_W, 1, "111"], ["rect", 0, 7, r.GAUGE_W, 1, "111"]])
+      [["rect", 0, 6, r.GAUGE_W, 1, "333"], ["rect", 0, 7, r.GAUGE_W, 1, "333"]])
 check("unknown and zero look the same", r.bars_for({"quota": 0, "context": 0}), r.bars_for({}))
 check("a gauge with a figure lights up",
       len([op for op in r.bars_for({"context": 50}) if op[0] == "px"]), r.GAUGE_W // 2)
 check("the gauges stop at the same column",
       {op[1] + op[3] for op in r.bars_for({}) if op[0] == "rect"}, {r.GAUGE_W})
 
-# ---- agent-specific input -------------------------------------------------------------
+# Prefixes and values are separate text operations so they can carry different colours. Their
+# second x coordinate must follow the variable-width panel font rather than the old fixed cell.
+check("a normal prefix leaves its extra column", r._draw(("C", "555", "50"), 8, 0)[1][1], 13)
+check("a wide M prefix leaves its extra column", r._draw(("M", "555", "G56"), 8, 0)[1][1], 15)
+check("four-pixel N and O prefixes leave their extra column",
+      [r._draw((prefix, "555", "1"), 8, 0)[1][1] for prefix in ("N", "O")], [14, 14])
 
-# Claude JSONL is a known input; Codex's transcript is deliberately opaque. A coincidentally
-# Claude-shaped Codex file must not make an unsupported context gauge appear.
+# ---- agent-specific input and display -------------------------------------------------
+
+# Claude JSONL remains one input. Codex telemetry is supplied by its numeric rollout reader rather
+# than interpreted as a Claude transcript.
 with tempfile.TemporaryDirectory() as state_dir:
     transcript = os.path.join(state_dir, "transcript.jsonl")
     with open(transcript, "w", encoding="utf-8") as f:
@@ -167,8 +174,67 @@ with tempfile.TemporaryDirectory() as state_dir:
                    "agent": "codex", "transcript": transcript, "updated": now}, f)
     codex_view = r.collect(now)
     check("Codex sessions keep their identity", codex_view.get("agent"), "codex")
-    check("Codex transcripts are not parsed", codex_view.get("tokens"), None)
-    check("Codex context remains unknown", codex_view.get("context"), None)
+    check("Codex transcripts are not parsed as Claude", codex_view.get("tokens"), None)
+
+# The Codex mark owns exactly the same band as the creature and never draws outside it.
+for status in r.STATE_LOOK:
+    frames, fps = r.codexmark.frames(status)
+    check(f"Codex {status} has frames", bool(frames), True)
+    points = [(op[1], op[2]) for frame in frames for op in frame]
+    check(f"Codex {status} stays in width", all(0 <= x < r.codexmark.WIDTH for x, _ in points), True)
+    check(f"Codex {status} stays in height", all(0 <= y < r.codexmark.HEIGHT for _, y in points), True)
+check("busy Codex mark animates", r.codexmark.frames("busy")[1] > 0, True)
+check("Codex mark and creature share width", r.codexmark.WIDTH, r.claudlet.WIDTH)
+
+view = {
+    "status": "idle", "context": 50, "quota": 31, "elapsed": None, "tokens": 2_500_000,
+    "metrics": {"context": 50, "quota_primary": 31, "quota_secondary": 12,
+                "tokens_total": 2_500_000, "model": "gpt-5.6-sol"},
+}
+custom = {"gauges": ["quota_secondary", "context"],
+          "labels": ["model", "tokens_total"], "busy_label": None, "symbol": "codex"}
+check("configured gauges select their metrics",
+      len([op for op in r.bars_for(view, custom) if op[0] == "px"]), round(r.GAUGE_W * .12) + 10)
+check("configured labels keep their order", [entry[0] for entry in r.labels_for(view, custom)], ["M", "N"])
+
+with tempfile.TemporaryDirectory() as state_dir:
+    r.SESSIONS = state_dir
+    now = time.time()
+    with open(os.path.join(state_dir, "live-codex.json"), "w", encoding="utf-8") as f:
+        json.dump({"session_id": "live-codex", "event": "UserPromptSubmit", "status": "busy",
+                   "agent": "codex", "updated": now - r.TTL - 10}, f)
+    old_read = r.codexusage.read
+    r.codexusage.read = lambda *_: {
+        "updated": now, "context_tokens": 100000, "context_window": 200000,
+        "context_pct": 50, "model": "gpt-5.6-sol", "cli_version": "0.149.0",
+        "usage_last": {"total_tokens": 100100},
+        "usage_total": {"input_tokens": 2000000, "cached_input_tokens": 1500000,
+                        "output_tokens": 4000, "reasoning_output_tokens": 1000,
+                        "total_tokens": 2005000},
+        "rate_limits": {"primary": {"used_percent": 31, "resets_at": now + 3600},
+                        "secondary": {"used_percent": 12, "resets_at": now + 7200},
+                        "credits": {"balance": "7"}, "plan_type": "plus"},
+    }
+    live = r.collect(now)
+    r.codexusage.read = old_read
+    check("rollout activity keeps a long Codex turn live", live.get("live"), 1)
+    check("Codex context reaches the common view", live.get("context"), 50)
+    check("Codex primary quota reaches the common view", live.get("quota"), 31)
+    check("Codex secondary quota is retained", live.get("quota_secondary"), 12)
+    check("all token lanes are retained", live["metrics"]["tokens_reasoning"], 1000)
+    check("Codex identity is retained", live["metrics"]["model"], "gpt-5.6-sol")
+
+with tempfile.TemporaryDirectory() as config_dir:
+    path = os.path.join(config_dir, "config.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"display": {"gauges": ["context", "quota_primary"]},
+                   "agents": {"codex": {"symbol": "codex", "labels": ["model"]}}}, f)
+    config = r.panelconfig.load(path)
+    codex_display = r.panelconfig.for_agent(config, "codex")
+    check("agent config inherits global gauges", codex_display["gauges"],
+          ["context", "quota_primary"])
+    check("agent config overrides its symbol", codex_display["symbol"], "codex")
+    check("agent config overrides label order", codex_display["labels"], ["model"])
 
 # ---- reconciling with the daemon ------------------------------------------------------
 

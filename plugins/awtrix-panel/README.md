@@ -1,7 +1,8 @@
 # awtrix-panel
 
 Whether Claude Code or Codex is working, waiting or asking you something — on a 32×8 LED panel,
-next to the clock it normally shows.
+next to the clock it normally shows. Claude keeps its walking crab; Codex uses the `>_` mark from
+its terminal header, with the cursor moving while it works.
 
 ```
   ┌─────────────────────────────────┐
@@ -117,7 +118,11 @@ ways to recover, and each of those was found by the panel going quiet.
 Several sessions share one panel: the most demanding status wins (asking beats working beats idle),
 subagents are summed, and the label carries the count.
 
-### The creature
+### Agent symbols
+
+The left band follows the active session's agent. Claude uses the claudlet-derived crab; Codex uses
+a 13×6 `>_` terminal mark. Both animate only a small changing part — legs or cursor — so the serial
+delta remains small.
 
 | Status | Looks like |
 |---|---|
@@ -125,6 +130,9 @@ subagents are summed, and the label carries the count.
 | waiting for you to approve | stops, eyes up with a mark above |
 | the turn ended badly | goes pale |
 | idle | eyes closed |
+
+For Codex, working animates the cursor, permission adds a flashing mark, error blinks the cursor,
+and idle leaves a slow terminal-cursor pulse. `display.symbol` can force either symbol or hide it.
 
 The label beside it says whatever the picture cannot. While a turn is running it is `T` and how long
 it has been running, which is the one figure nothing else carries and the only one that keeps moving
@@ -146,16 +154,24 @@ the bottom two left for the gauges.
 | status | `SessionStart`, `UserPromptSubmit`, `PermissionRequest`, `Stop`; Claude also reports `StopFailure` |
 | a session going away | `SessionEnd` — the file is deleted, so its mark leaves the row within the second rather than after the TTL |
 | subagent count | `SubagentStart` / `SubagentStop` |
-| context usage (Claude only) | the session transcript — the newest turn's `input + cache_creation + cache_read + output` tokens |
+| current/recent tool and compaction count | tool and compact lifecycle hooks; Codex also falls back to the rollout tool name |
+| Claude context | the newest transcript turn; its optional statusline supplies exact context, 5-hour and 7-day quota, and cost |
+| Codex context and usage | numeric `token_count` events in the local rollout: current context, recent and cumulative token detail |
+| Codex account limits | primary and secondary usage, window and reset, credits, plan and limit state from the same event |
+| Codex session metadata | model, reasoning effort, CLI version, provider and origin from session/turn metadata |
 
-`PreToolUse` and `PostToolUse` are **deliberately not wired**. They would fire on every tool call,
-and there is no room on 32×8 for a tool name, so the collector understands them but the plugin does
-not pay for them. Codex discovers `hooks/hooks.json`; Claude uses `hooks/claude.json` through its
-manifest so each agent receives only events and output conventions it supports.
+Tool events are collected even when the default display does not select them; `tool` can be added
+to the configured label cycle. Codex discovers `hooks/hooks.json`; Claude uses `hooks/claude.json`
+through its manifest so each agent receives only events and output conventions it supports. Codex
+CLI 0.149.0 does not emit tool hooks for its shell executor, so the reader also extracts the bounded
+tool name from the rollout envelope without decoding its input or output.
 
-Codex context and quota are intentionally left unknown for now. Its hook payloads expose state but
-do not define a stable transcript contract comparable to Claude's statusline, so the renderer does
-not guess at private session files. The two empty gauge tracks make that absence explicit.
+The Codex rollout format is an implementation detail, not a documented plugin API. The reader is
+therefore defensive: every field is optional, truncation and replacement reset its incremental
+cursor, and an unknown shape becomes an unknown metric rather than a broken hook. It checks only
+`session_meta`, `turn_context`, `token_count`, and the name in tool envelopes. Prompt, response,
+reasoning, and tool content are skipped before JSON decoding and are never copied to the panel
+state or renderer log.
 
 ### Context is measured, not guessed
 
@@ -170,7 +186,47 @@ Wiring that up is optional and described below; the plugin works without it.
 
 ## Configuration
 
-All optional, all environment variables.
+Display selection lives separately from collection. Copy `config.example.json` to
+`~/.config/awtrix-panel/config.json`, or point `AWTRIX_PANEL_CONFIG` at another file. Changes are
+read while the renderer runs; no reinstall is needed.
+
+```json
+{
+  "display": {
+    "symbol": "auto",
+    "gauges": ["quota_primary", "context"],
+    "labels": ["context", "quota_primary", "quota_secondary", "subagents", "tokens_total"],
+    "busy_label": "elapsed"
+  },
+  "agents": {
+    "codex": {
+      "symbol": "codex",
+      "labels": ["context", "quota_primary", "quota_primary_reset", "model"]
+    }
+  }
+}
+```
+
+`agents.claude` and `agents.codex` override the global `display` one key at a time. `symbol` accepts
+`auto`, `claude`, `codex` or `none`. `gauges` chooses the top and bottom percentage rows; an unknown
+value remains an empty track. `labels` is the idle-cycle order, and `busy_label` is the one metric
+held while work is running — set it to `null` to cycle labels while busy too.
+
+Available metrics:
+
+| Group | Names |
+|---|---|
+| lifecycle | `elapsed`, `sessions`, `subagents`, `tool`, `compactions` |
+| context | `context`, `context_remaining`, `tokens_context` |
+| quota | `quota_primary`, `quota_secondary`, `quota_primary_reset`, `quota_secondary_reset`, `credits` |
+| tokens | `tokens_last`, `tokens_input`, `tokens_cached`, `tokens_output`, `tokens_reasoning`, `tokens_total` |
+| identity | `model`, `reasoning`, `provider`, `origin`, `plan`, `codex_version` |
+| Claude statusline | `cost` |
+
+Collection is not gated by these choices. Changing a list only changes what reaches the 32×8
+layout, so a later configuration can use data that was not previously shown.
+
+Runtime settings remain environment variables:
 
 | | Default | |
 |---|---|---|
@@ -180,6 +236,7 @@ All optional, all environment variables.
 | `AWTRIX_PANEL_WALK_FPS` | `6` | gait speed while working |
 | `AWTRIX_PANEL_LABEL_FPS` | `10` | label animation rate, and the rate the session marks breathe at |
 | `AWTRIX_PANEL_LABEL_DWELL` | `18` | frames each metric holds before the next slides in |
+| `AWTRIX_PANEL_CONFIG` | `~/.config/awtrix-panel/config.json` | JSON display configuration |
 | `AWTRIX_PANEL_HOME` | `~/.local/state/awtrix-panel` | this plugin's state, pidfile and log |
 | `PIXELWIRE_HOME` | `~/.local/state/pixelwire` | the display server's state and socket — both halves must agree |
 

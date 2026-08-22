@@ -1,0 +1,31 @@
+{
+  "display": {
+    "symbol": "auto",
+    "gauges": ["quota_primary", "context"],
+    "labels": [
+      "context",
+      "quota_primary",
+      "quota_secondary",
+      "subagents",
+      "tokens_total"
+    ],
+    "busy_label": "elapsed"
+  },
+  "agents": {
+    "codex": {
+      "symbol": "codex",
+      "labels": [
+        "context",
+        "quota_primary",
+        "quota_primary_reset",
+        "tokens_input",
+        "tokens_output",
+        "tokens_reasoning",
+        "model"
+      ]
+    },
+    "claude": {
+      "symbol": "claude"
+    }
+  }
+}

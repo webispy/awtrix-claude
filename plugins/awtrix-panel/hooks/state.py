@@ -31,7 +31,9 @@ TOOL_KEYS = ("tool_name", "toolName", "tool")
 
 # Events that mean somebody is using this session, and so that the panel should be alive. Stop is
 # in here too: a turn ending is the moment the display has something new to say.
-WAKES_RENDERER = ("SessionStart", "UserPromptSubmit", "PermissionRequest", "Stop", "StopFailure")
+WAKES_RENDERER = (
+    "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "Stop", "StopFailure"
+)
 
 STATUS_FOR = {
     "SessionStart": "idle",
@@ -44,6 +46,8 @@ STATUS_FOR = {
     # A turn that ended badly is worth a different face than one that simply ended.
     "StopFailure": "error",
     "PostToolUseFailure": "error",
+    "PreCompact": "busy",
+    "PostCompact": "busy",
     "TeammateIdle": "idle",
 }
 
@@ -69,7 +73,7 @@ def first(doc: dict, keys, default=None):
     return default
 
 
-def merge(path: str, updates: dict, agent_delta: int = 0) -> None:
+def merge(path: str, updates: dict, deltas: dict | None = None) -> None:
     """Merge one record without losing a concurrent hook or statusline update."""
     with open(path + ".lock", "a+", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -81,8 +85,8 @@ def merge(path: str, updates: dict, agent_delta: int = 0) -> None:
                     current = loaded
         except Exception:
             pass
-        if agent_delta:
-            current["agents"] = max(0, int(current.get("agents") or 0) + agent_delta)
+        for key, delta in (deltas or {}).items():
+            current[key] = max(0, int(current.get(key) or 0) + delta)
         current.update(updates)
         current["updated"] = time.time()
         tmp = f"{path}.{os.getpid()}.tmp"
@@ -144,12 +148,17 @@ def main(argv: list[str]) -> int:
 
 
     # Subagents come and go in pairs; the renderer shows the count, so track it rather than a flag.
-    agent_delta = 0
+    deltas = {}
     if event in ("SubagentStart", "SubagentStop"):
-        agent_delta = 1 if event == "SubagentStart" else -1
+        deltas["agents"] = 1 if event == "SubagentStart" else -1
+    if event == "PreCompact":
+        updates["compacting"] = True
+        deltas["compactions"] = 1
+    elif event == "PostCompact":
+        updates["compacting"] = False
 
     os.makedirs(SESSIONS, mode=0o700, exist_ok=True)
-    merge(os.path.join(SESSIONS, session + ".json"), updates, agent_delta)
+    merge(os.path.join(SESSIONS, session + ".json"), updates, deltas)
 
     # The renderer ends itself when every session has expired, and it can also be killed or crash.
     # A session that is already open never sees SessionStart again, so waking it only there left
@@ -169,7 +178,8 @@ def _code_mtime() -> float:
     # through a symlink, and the two must agree on which file they are timing.
     here = os.path.dirname(os.path.realpath(__file__))
     best = 0.0
-    for rel in ("../renderer.py", "../claudlet.py"):
+    for rel in ("../renderer.py", "../claudlet.py", "../codexmark.py", "../codexusage.py",
+                "../panelconfig.py"):
         try:
             best = max(best, os.path.getmtime(os.path.normpath(os.path.join(here, rel))))
         except OSError:
