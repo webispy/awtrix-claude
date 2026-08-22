@@ -1,7 +1,8 @@
-# awtrix-claude
+# awtrix-agents
 
-Put a Claude Code session on a desk clock: context usage, quota and whether it is working or
-waiting for you, on the 32×8 LED matrix of a **Ulanzi TC001**.
+Put Claude Code and Codex sessions on a desk clock: whether an agent is working, waiting for you,
+or running subagents, on the 32×8 LED matrix of a **Ulanzi TC001**. Claude can additionally show
+context and quota through its statusline integration.
 
 Getting there needed a control channel the panel did not have. That part is finished and running:
 a fork of [AWTRIX NG](https://github.com/Blueforcer/awtrix-ng) that takes commands and raw frames
@@ -12,7 +13,7 @@ the same network - or on any network at all.
 |---|---|
 | **Firmware** - serial command channel + 32×8 framebuffer streaming | done, flashed, measured |
 | **Display server** - `pixelwire`, one owner of the port, composited layers | done |
-| **Claude Code plugin** - session state on the panel | done |
+| **Claude Code + Codex plugin** - shared session state on the panel | done |
 
 Three repositories side by side in one directory. None of them contains another: the firmware is
 rebased on upstream and the display server is released separately, so each is cloned and committed
@@ -20,7 +21,7 @@ to on its own.
 
 ```
 <workspace>/
-├── awtrix-claude/   this repository - the plugin, its marketplace, and these notes
+├── awtrix-agents/   this repository - Claude/Codex plugin manifests and shared renderer
 ├── awtrix-ng/       the firmware fork      webispy/awtrix-ng, branch serial-control
 ├── pixelwire/       the display server     webispy/pixelwire
 └── .venv/           PlatformIO, esptool, mkdocs - only if you are building firmware
@@ -32,7 +33,7 @@ Paths in these notes are written from the workspace directory, the one holding a
 |---|---|---|
 | [`webispy/awtrix-ng`](https://github.com/webispy/awtrix-ng) | branch `serial-control` | takes commands and raw frames over UART0. C++/PlatformIO |
 | [`webispy/pixelwire`](https://github.com/webispy/pixelwire) | `main` | owns the port, composites named layers, streams the difference. Rust |
-| this one | `main` | the plugin that decides what a Claude Code session looks like. Python, standard library only |
+| this one | `main` | the plugin that decides what agent sessions look like. Python, standard library only |
 
 ---
 
@@ -43,7 +44,7 @@ one build, one plugin install:
 
 ```bash
 mkdir awtrix && cd awtrix                  # the workspace; call it what you like
-git clone https://github.com/webispy/awtrix-claude.git
+git clone https://github.com/webispy/awtrix-agents.git
 git clone -b serial-control https://github.com/webispy/awtrix-ng.git
 git clone https://github.com/webispy/pixelwire.git
 
@@ -51,17 +52,44 @@ cd pixelwire && ./install.sh && cd ..      # needs Rust 1.88+; puts two binaries
 pixelwire stat                             # plug the clock in first - this should find it
 ```
 
-Then, in Claude Code:
+Then install it in either or both agents.
+
+Claude Code:
 
 ```
-/plugin marketplace add /absolute/path/to/awtrix/awtrix-claude
-/plugin install awtrix-panel@awtrix-claude
+/plugin marketplace add /absolute/path/to/awtrix/awtrix-agents
+/plugin install awtrix-panel@awtrix-agents
 ```
 
-Only sessions started **after** that have the hooks, and `plugin install` copies the plugin into a
+Codex CLI:
+
+```bash
+codex plugin marketplace add /absolute/path/to/awtrix/awtrix-agents
+codex plugin add awtrix-panel@awtrix-agents
+```
+
+Only sessions started **after** installation have the hooks, and plugin installation copies the plugin into a
 cache rather than running it from the checkout - so a change here needs a version bump and a
 reinstall before it takes effect. [The plugin's own README](plugins/awtrix-panel/README.md) has the
 details, the environment variables and the troubleshooting table.
+
+### Migrating from awtrix-claude
+
+The repository rename keeps Git history, and GitHub redirects existing clone URLs after the remote
+repository is renamed. The Claude marketplace identifier does change, so remove the old marketplace
+and install from `awtrix-agents` once:
+
+```
+/plugin marketplace remove awtrix-claude
+/plugin marketplace add webispy/awtrix-agents
+/plugin install awtrix-panel@awtrix-agents
+```
+
+For an existing local clone, rename the directory if desired and then update its remote:
+
+```bash
+git remote set-url origin git@github.com:webispy/awtrix-agents.git
+```
 
 Nothing computes the paths between the three, so the workspace can live anywhere and the
 directories can be named anything. Only these notes assume the arrangement above.

@@ -1,11 +1,11 @@
 # awtrix-panel
 
-Whether Claude Code is working, waiting or asking you something — on a 32×8 LED panel, next to the
-clock it normally shows.
+Whether Claude Code or Codex is working, waiting or asking you something — on a 32×8 LED panel,
+next to the clock it normally shows.
 
 ```
   ┌─────────────────────────────────┐
-  │  *********                      │   a creature that walks while Claude works,
+  │  *********                      │   a creature that walks while an agent works,
   │  %%%%%%%%%     T 4 2            │   stops and looks up when it needs you,
   │@@%%#%%%#%%@@                    │   and closes its eyes when there is nothing to do
   │@@%%%%%%%%%@@                    │
@@ -31,14 +31,23 @@ at once.
 
 The panel does **not** need to be on your network — that is the whole point of driving it over the
 cable. Setup for the firmware is in the
-[repository README](https://github.com/webispy/awtrix-claude), and for the display server in
+[repository README](https://github.com/webispy/awtrix-agents), and for the display server in
 [pixelwire's](https://github.com/webispy/pixelwire).
 
 ## Install
 
+Claude Code:
+
 ```
-/plugin marketplace add webispy/awtrix-claude
-/plugin install awtrix-panel@awtrix-claude
+/plugin marketplace add webispy/awtrix-agents
+/plugin install awtrix-panel@awtrix-agents
+```
+
+Codex CLI:
+
+```bash
+codex plugin marketplace add webispy/awtrix-agents
+codex plugin add awtrix-panel@awtrix-agents
 ```
 
 That is all. The hooks ship with the plugin, so nothing has to be added to `settings.json`, and the
@@ -51,7 +60,7 @@ pixelwire stat                                 # the display server is up and ho
 tail -f ~/.local/state/awtrix-panel/renderer.log
 ```
 
-Only sessions started *after* the install have the hooks: Claude Code reads hook configuration when
+Only sessions started *after* the install have the hooks: both agents read hook configuration when
 a session starts, so windows that were already open report nothing until they are restarted. An
 empty `~/.local/state/awtrix-panel/sessions/` while a session is plainly busy means exactly that.
 
@@ -68,7 +77,7 @@ what a release does anyway. Or, to iterate without a version bump each time, rep
 directory with a link to the checkout:
 
 ```bash
-CACHE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/awtrix-claude/awtrix-panel/0.1.0"
+CACHE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/awtrix-agents/awtrix-panel/0.3.0"
 rm -rf "$CACHE" && ln -s "$PWD/plugins/awtrix-panel" "$CACHE"
 ```
 
@@ -134,14 +143,19 @@ the bottom two left for the gauges.
 
 | Shown | From |
 |---|---|
-| status | `SessionStart`, `UserPromptSubmit`, `PermissionRequest`, `Stop`, `StopFailure` |
+| status | `SessionStart`, `UserPromptSubmit`, `PermissionRequest`, `Stop`; Claude also reports `StopFailure` |
 | a session going away | `SessionEnd` — the file is deleted, so its mark leaves the row within the second rather than after the TTL |
 | subagent count | `SubagentStart` / `SubagentStop` |
-| context usage | the session transcript — the newest turn's `input + cache_creation + cache_read + output` tokens |
+| context usage (Claude only) | the session transcript — the newest turn's `input + cache_creation + cache_read + output` tokens |
 
 `PreToolUse` and `PostToolUse` are **deliberately not wired**. They would fire on every tool call,
 and there is no room on 32×8 for a tool name, so the collector understands them but the plugin does
-not pay for them. Add them to `hooks/hooks.json` if you build a layout that uses them.
+not pay for them. Codex discovers `hooks/hooks.json`; Claude uses `hooks/claude.json` through its
+manifest so each agent receives only events and output conventions it supports.
+
+Codex context and quota are intentionally left unknown for now. Its hook payloads expose state but
+do not define a stable transcript contract comparable to Claude's statusline, so the renderer does
+not guess at private session files. The two empty gauge tracks make that absence explicit.
 
 ### Context is measured, not guessed
 
@@ -212,7 +226,7 @@ on the panel forever.
 | `pixelwired is not installed` | install [pixelwire](https://github.com/webispy/pixelwire) and make sure `pixelwired` is on `PATH` |
 | the clock is gone | streaming owns the panel; `pixelwire clear` hands it back at once |
 | gauge looks wrong | `AWTRIX_PANEL_CONTEXT_WINDOW` — see above |
-| still showing after Claude Code exits | `SessionEnd` covers an orderly `/quit`; a session that was killed waits out `AWTRIX_PANEL_TTL` |
+| still showing after an agent exits | `SessionEnd` covers an orderly exit; a session that was killed waits out `AWTRIX_PANEL_TTL` |
 | panel busy while flashing firmware | `pixelwire stop`, then `pkill -f awtrix-panel/renderer.py` |
 
 The renderer logs every repaint, so the log shows exactly what it decided:
