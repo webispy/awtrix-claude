@@ -1,0 +1,23 @@
+{
+  "name": "awtrix-panel",
+  "version": "0.3.0",
+  "description": "Codex session state on an AWTRIX NG LED matrix panel, through pixelwire",
+  "author": {
+    "name": "webispy",
+    "email": "webispy@gmail.com",
+    "url": "https://github.com/webispy"
+  },
+  "homepage": "https://github.com/webispy/awtrix-agents",
+  "repository": "https://github.com/webispy/awtrix-agents",
+  "license": "MIT",
+  "keywords": ["codex", "awtrix", "led-matrix", "serial", "status"],
+  "interface": {
+    "displayName": "AWTRIX Panel",
+    "shortDescription": "Show Codex activity on an AWTRIX panel.",
+    "longDescription": "Shows Codex working, waiting, permission, and subagent states on a USB-connected AWTRIX NG LED matrix through pixelwire.",
+    "developerName": "webispy",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Show my Codex session state on the AWTRIX panel."
+  }
+}

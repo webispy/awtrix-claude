@@ -6,7 +6,7 @@ animation affordable: the server owns the serial port and streams only the pixel
 a walk cycle costs about thirty bytes a frame rather than the eight hundred a whole sprite payload
 costs as draw commands.
 
-Standard library only, like the daemon's client half. Started by the SessionStart hook and ends
+Standard library only, like the daemon's client half. Started by an agent hook and ends
 itself once every session has gone quiet, handing the panel back to the clock.
 
     renderer.py [--once]
@@ -22,6 +22,7 @@ import signal
 import subprocess
 import sys
 import time
+import fcntl
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
@@ -30,6 +31,7 @@ import claudlet  # noqa: E402
 HOME = os.environ.get("AWTRIX_PANEL_HOME") or os.path.expanduser("~/.local/state/awtrix-panel")
 SESSIONS = os.path.join(HOME, "sessions")
 PIDFILE = os.path.join(HOME, "renderer.pid")
+LOCKFILE = os.path.join(HOME, "renderer.lock")
 
 # How long a session may go untouched before it stops counting. Fifteen minutes was chosen to sit
 # through a long think, but a session file is only refreshed by a hook - so a window left open and
@@ -87,6 +89,7 @@ PULSE_FLOOR = 0.12
 OTHER_LEVEL = 0.55
 
 STOP = False
+INSTANCE_LOCK = None
 
 
 def _stop(_sig, _frame):
@@ -294,7 +297,9 @@ def collect(now: float) -> dict:
         status = "idle"
 
     tokens = None
-    if primary.get("transcript"):
+    # Claude's JSONL layout is understood here. Codex deliberately does not promise a stable
+    # transcript schema, so its path is retained as metadata but never parsed.
+    if primary.get("agent", "claude") == "claude" and primary.get("transcript"):
         tokens = context_from_transcript(primary["transcript"])
     window = window_for(tokens)
     context = primary.get("context_pct")        # the statusline filter, when installed
@@ -320,6 +325,7 @@ def collect(now: float) -> dict:
     # single figure the rest of the panel uses.
     states = [(r.get("status") if r.get("status") in STATE_LOOK else "idle") for r in ordered]
     return {"live": len(sessions), "active": active, "status": status, "states": states,
+            "agent": primary.get("agent", "claude"),
             "tokens": tokens,
             "context": context, "elapsed": None if elapsed is None else int(elapsed),
             "quota": None if quota is None else int(quota),
@@ -655,13 +661,35 @@ def claim() -> None:
     os.replace(tmp, PIDFILE)
 
 
+def acquire_instance() -> bool:
+    """Atomically become the renderer, closing the gap between checking and claiming."""
+    global INSTANCE_LOCK
+    os.makedirs(HOME, mode=0o700, exist_ok=True)
+    lock = open(LOCKFILE, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock.close()
+        return False
+    INSTANCE_LOCK = lock
+    return True
+
+
 def release() -> None:
+    global INSTANCE_LOCK
     try:
         with open(PIDFILE, encoding="utf-8") as f:
             if int(f.read().strip().split()[0]) == os.getpid():
                 os.unlink(PIDFILE)
     except Exception:
         pass
+    if INSTANCE_LOCK is not None:
+        try:
+            fcntl.flock(INSTANCE_LOCK, fcntl.LOCK_UN)
+            INSTANCE_LOCK.close()
+        except OSError:
+            pass
+        INSTANCE_LOCK = None
 
 
 def main(argv: list[str]) -> int:
@@ -673,6 +701,9 @@ def main(argv: list[str]) -> int:
         paint(collect(time.time()))
         return 0
 
+    if not acquire_instance():
+        log("another renderer won the startup race, exiting")
+        return 0
     claim()
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)

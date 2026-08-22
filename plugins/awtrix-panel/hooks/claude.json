@@ -1,0 +1,13 @@
+{
+  "description": "Records Claude Code session state for the AWTRIX panel renderer. Every hook writes one small file and exits; nothing here touches the serial port.",
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/state.py\" SessionStart claude", "timeout": 10}]}],
+    "SessionEnd": [{"hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/state.py\" SessionEnd claude", "timeout": 5}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/state.py\" UserPromptSubmit claude", "timeout": 5}]}],
+    "PermissionRequest": [{"hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/state.py\" PermissionRequest claude", "timeout": 5}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/state.py\" Stop claude", "timeout": 5}]}],
+    "StopFailure": [{"hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/state.py\" StopFailure claude", "timeout": 5}]}],
+    "SubagentStart": [{"hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/state.py\" SubagentStart claude", "timeout": 5}]}],
+    "SubagentStop": [{"hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/state.py\" SubagentStop claude", "timeout": 5}]}]
+  }
+}

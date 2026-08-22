@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import time
+import fcntl
 
 HOME = os.environ.get("AWTRIX_PANEL_HOME") or os.path.expanduser("~/.local/state/awtrix-panel")
 SESSIONS = os.path.join(HOME, "sessions")
@@ -47,22 +48,26 @@ def pct(value) -> int | None:
 
 
 def merge(path: str, updates: dict) -> None:
-    current = {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            loaded = json.load(f)
-            if isinstance(loaded, dict):
-                current = loaded
-    except Exception:
-        pass
-    current.update(updates)
-    # Deliberately not touching `updated`: this runs on every statusline render, and refreshing
-    # the timestamp would keep a finished session alive on the panel forever.
-    current.setdefault("updated", time.time())
-    tmp = f"{path}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(current, f)
-    os.replace(tmp, path)
+    with open(path + ".lock", "a+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            with open(path, encoding="utf-8") as f:
+                loaded = json.load(f)
+        except FileNotFoundError:
+            # SessionEnd may have removed it after main()'s fast-path existence check but before
+            # this lock was acquired. A statusline sample must never resurrect a closed session.
+            return
+        except Exception:
+            loaded = {}
+        current = loaded if isinstance(loaded, dict) else {}
+        current.update(updates)
+        # Deliberately not touching `updated`: this runs on every statusline render, and refreshing
+        # the timestamp would keep a finished session alive on the panel forever.
+        current.setdefault("updated", time.time())
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(current, f)
+        os.replace(tmp, path)
 
 
 def main() -> int:

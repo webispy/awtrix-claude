@@ -1,18 +1,18 @@
 {
-  "name": "awtrix-claude",
+  "name": "awtrix-agents",
   "owner": {
     "name": "webispy",
     "email": "webispy@gmail.com"
   },
   "metadata": {
-    "description": "Claude Code session state on an AWTRIX NG LED matrix panel, over USB serial",
-    "version": "0.2.0"
+    "description": "Claude Code and Codex session state on an AWTRIX NG LED matrix panel, over USB serial",
+    "version": "0.3.0"
   },
   "plugins": [
     {
       "name": "awtrix-panel",
       "source": "./plugins/awtrix-panel",
-      "description": "Shows whether Claude Code is working, waiting or asking, plus context usage and quota, on a 32x8 LED panel. Needs a Ulanzi TC001 (or any AWTRIX NG board) running the serial-control firmware, and pixelwire to drive it.",
+      "description": "Shows whether Claude Code or Codex is working, waiting or asking on a 32x8 LED panel. Needs a Ulanzi TC001 (or any AWTRIX NG board) running the serial-control firmware, and pixelwire to drive it.",
       "category": "monitoring",
       "tags": [
         "monitoring",

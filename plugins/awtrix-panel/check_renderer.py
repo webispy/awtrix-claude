@@ -9,9 +9,11 @@ dot-ordering mistakes survived at once. Four pixels are not enough to eyeball.
 Run: python plugins/awtrix-panel/check_renderer.py     (exit 1 on failure)
 """
 
+import json
 import os
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -148,6 +150,25 @@ check("a gauge with a figure lights up",
       len([op for op in r.bars_for({"context": 50}) if op[0] == "px"]), r.GAUGE_W // 2)
 check("the gauges stop at the same column",
       {op[1] + op[3] for op in r.bars_for({}) if op[0] == "rect"}, {r.GAUGE_W})
+
+# ---- agent-specific input -------------------------------------------------------------
+
+# Claude JSONL is a known input; Codex's transcript is deliberately opaque. A coincidentally
+# Claude-shaped Codex file must not make an unsupported context gauge appear.
+with tempfile.TemporaryDirectory() as state_dir:
+    transcript = os.path.join(state_dir, "transcript.jsonl")
+    with open(transcript, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"message": {"usage": {"input_tokens": 50000}}}) + "\n")
+    r.SESSIONS = state_dir
+    now = time.time()
+    session_file = os.path.join(state_dir, "codex.json")
+    with open(session_file, "w", encoding="utf-8") as f:
+        json.dump({"session_id": "codex", "event": "Stop", "status": "idle",
+                   "agent": "codex", "transcript": transcript, "updated": now}, f)
+    codex_view = r.collect(now)
+    check("Codex sessions keep their identity", codex_view.get("agent"), "codex")
+    check("Codex transcripts are not parsed", codex_view.get("tokens"), None)
+    check("Codex context remains unknown", codex_view.get("context"), None)
 
 # ---- reconciling with the daemon ------------------------------------------------------
 

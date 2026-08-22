@@ -1,0 +1,14 @@
+{
+  "name": "awtrix-agents",
+  "interface": {
+    "displayName": "AWTRIX Agents"
+  },
+  "plugins": [
+    {
+      "name": "awtrix-panel",
+      "source": {"source": "local", "path": "./plugins/awtrix-panel"},
+      "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+      "category": "Productivity"
+    }
+  ]
+}

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Record one Claude Code event into the panel's state file.
+"""Record one coding-agent event into the panel's state file.
 
 This runs inside a hook, so it is written to be boring: standard library only, no serial port, no
 network, and every failure swallowed. A hook that raises or blocks costs the user their session,
 and nothing here is worth that. The renderer is the only process that talks to the panel.
 
-    state.py <event> [--tool-from-stdin]
+    state.py <event> [agent]
 
 The event name comes from argv rather than from the payload, so the wiring in hooks.json is the
 single place that has to be right.
@@ -17,14 +17,15 @@ import json
 import os
 import sys
 import time
+import fcntl
 
-# One file per session, so several Claude Code windows can share a panel and the renderer can
+# One file per session, so several Claude Code or Codex windows can share a panel and the renderer can
 # aggregate them. The file is a merge target: hooks own the status fields, the optional statusline
 # wrapper owns the context and quota fields, and neither clobbers the other.
 HOME = os.environ.get("AWTRIX_PANEL_HOME") or os.path.expanduser("~/.local/state/awtrix-panel")
 SESSIONS = os.path.join(HOME, "sessions")
 
-# Claude Code has settled on snake_case, but accept both rather than lose a session id to a rename.
+# Both supported hook APIs use snake_case today; accept camelCase as a compatibility fallback.
 ID_KEYS = ("session_id", "sessionId")
 TOOL_KEYS = ("tool_name", "toolName", "tool")
 
@@ -68,26 +69,44 @@ def first(doc: dict, keys, default=None):
     return default
 
 
-def merge(path: str, updates: dict) -> None:
-    """Read-modify-write with an atomic rename, so a reader never sees half a record."""
-    current = {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            loaded = json.load(f)
-            if isinstance(loaded, dict):
-                current = loaded
-    except Exception:
-        pass
-    current.update(updates)
-    current["updated"] = time.time()
-    tmp = f"{path}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(current, f)
-    os.replace(tmp, path)
+def merge(path: str, updates: dict, agent_delta: int = 0) -> None:
+    """Merge one record without losing a concurrent hook or statusline update."""
+    with open(path + ".lock", "a+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        current = {}
+        try:
+            with open(path, encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    current = loaded
+        except Exception:
+            pass
+        if agent_delta:
+            current["agents"] = max(0, int(current.get("agents") or 0) + agent_delta)
+        current.update(updates)
+        current["updated"] = time.time()
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(current, f)
+        os.replace(tmp, path)
+
+
+def remove(path: str) -> None:
+    """Remove a session without racing a final statusline or hook merge."""
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    with open(path + ".lock", "a+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def main(argv: list[str]) -> int:
     event = argv[1] if len(argv) > 1 else ""
+    agent = argv[2].lower() if len(argv) > 2 else "claude"
+    if agent not in ("claude", "codex"):
+        agent = "unknown"
     payload = read_payload()
 
     session = first(payload, ID_KEYS, "default")
@@ -101,13 +120,10 @@ def main(argv: list[str]) -> int:
     # malformed one would take out the fallback file belonging to somebody else.
     if event == "SessionEnd":
         if first(payload, ID_KEYS, "") :
-            try:
-                os.unlink(os.path.join(SESSIONS, session + ".json"))
-            except OSError:
-                pass
+            remove(os.path.join(SESSIONS, session + ".json"))
         return 0
 
-    updates: dict = {"session_id": session, "event": event}
+    updates: dict = {"session_id": session, "event": event, "agent": agent}
     if event in STATUS_FOR:
         updates["status"] = STATUS_FOR[event]
     # When the work started, so the panel can say how long it has been going. Only a prompt starts
@@ -128,17 +144,12 @@ def main(argv: list[str]) -> int:
 
 
     # Subagents come and go in pairs; the renderer shows the count, so track it rather than a flag.
+    agent_delta = 0
     if event in ("SubagentStart", "SubagentStop"):
-        delta = 1 if event == "SubagentStart" else -1
-        try:
-            with open(os.path.join(SESSIONS, session + ".json"), encoding="utf-8") as f:
-                have = int(json.load(f).get("agents") or 0)
-        except Exception:
-            have = 0
-        updates["agents"] = max(0, have + delta)
+        agent_delta = 1 if event == "SubagentStart" else -1
 
     os.makedirs(SESSIONS, mode=0o700, exist_ok=True)
-    merge(os.path.join(SESSIONS, session + ".json"), updates)
+    merge(os.path.join(SESSIONS, session + ".json"), updates, agent_delta)
 
     # The renderer ends itself when every session has expired, and it can also be killed or crash.
     # A session that is already open never sees SessionStart again, so waking it only there left
@@ -201,10 +212,19 @@ def spawn_renderer() -> None:
         pass
 
 
+def codex_requires_json(argv: list[str]) -> bool:
+    """Codex Stop hooks require valid JSON on a successful command hook."""
+    return len(argv) > 2 and argv[2].lower() == "codex" and argv[1] in ("Stop", "SubagentStop")
+
+
 if __name__ == "__main__":
+    code = 0
     try:
-        sys.exit(main(sys.argv))
+        code = main(sys.argv)
     except Exception:
         # A hook that fails must still exit 0. The panel going stale is a far smaller problem than
         # an error surfacing in somebody's session.
-        sys.exit(0)
+        code = 0
+    if codex_requires_json(sys.argv):
+        print("{}")
+    sys.exit(code)
